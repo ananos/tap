@@ -28,10 +28,12 @@
 #include <linux/uaccess.h>
 #include <uapi/linux/if.h>
 #include <uapi/linux/if_tun.h>
+#include <linux/if_tun.h>
 #include <uapi/linux/if_ether.h>
 #include <uapi/linux/in.h>
 #include <linux/inet.h>
 #include <net/sock.h>
+#include <linux/kthread.h>
 #include <linux/net.h>
 #include <linux/inetdevice.h>
 
@@ -39,6 +41,7 @@
 
 static mm_segment_t oldfs;
 struct file *tunfileptr;
+struct task_struct *t;
 
 char *tapname = "tap12";
 char *brname = "br12";
@@ -96,12 +99,57 @@ struct socket *socketif(int family, int type, int protocol)
     return NULL;
 }
 
+static inline int recvfrom(void *arg)
+{
+
+    struct msghdr msg = {.msg_flags = MSG_TRUNC };
+    struct iovec iov;
+    char buf[2048];
+    struct socket *sock = (struct socket *) arg;
+    int recvlen;
+    int ret = -EINVAL;
+
+    if (sock->sk == NULL) {
+        printk("sk = 0\n");
+        ret = 0;
+        goto out;
+    }
+    iov.iov_base = buf;
+    iov.iov_len = 2048;
+
+    while (!kthread_should_stop()) {
+        iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, 2048);
+        recvlen = sock_recvmsg(sock, &msg, MSG_TRUNC);
+        //iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, 2048);
+
+        //printk("recvlen = %d\n", recvlen);
+        if (recvlen < 0) {
+            if (recvlen == -EAGAIN) {
+                schedule();
+                continue;
+            }
+            printk("recvlen:%d\n", recvlen);
+            goto out;
+        }
+        if (((struct ethhdr *) buf)->h_proto != htons(ETH_P_IP)) {
+            printk("received non IP frame, proto:%x, len:%u\n", ntohs(((struct ethhdr *) buf)->h_proto), recvlen);
+        }
+
+    }
+
+  out:
+    sock_release(sock);
+    return ret;
+}
+
+
 static int enable_iface(char *ifname)
 {
     int ret = -EINVAL;
     struct ifreq ifr = { };
     struct socket *socket = NULL;
     struct file *fileptr = NULL;
+    char thrname[20];
 
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
     ifr.ifr_addr.sa_family = AF_INET;
@@ -333,9 +381,12 @@ static int tuntap_iface_init(struct file **tunfptr, char *ifname)
     return ret;
 }
 
+
 static int __init tuntap_init(void)
 {
     int ret = -EINVAL;
+    char thrname[20];
+    struct socket *socket;
 
     printk("Init tuntap\n");
 
@@ -352,14 +403,40 @@ static int __init tuntap_init(void)
 
     enable_iface(tapname);
     enable_iface(brname);
+    enable_iface("eth1");
     ret = br_add_interface(brname, tapname);
-    //ret = br_add_interface(brname, "eth1");
+    ret = br_add_interface(brname, "eth1");     /* temp 2nd interface to have some traffic */
+
+    struct net_device *tapdev = dev_get_by_name(&init_net, tapname);
+    int ifindex = tapdev->ifindex;
+
+    sprintf(thrname, "recv-%s", tapname);
+
+    if ((socket = socketif(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) == NULL) {
+        printk("error creating socket\n");
+        goto out;
+    }
+    oldfs = get_fs();
+    set_fs(KERNEL_DS);
+    ret = sock_setsockopt(socket, SOL_SOCKET, SO_BINDTODEVICE, tapname, IFNAMSIZ - 1);
+    set_fs(oldfs);
+    if (ret < 0) {
+        printk("setsockoptp SO_BINDTODEVICE, reg:%d\n", ret);
+        goto out;
+    }
+
+    dev_put(tapdev);
+    /* temp thread to understand how to capture eth frames */
+    t = kthread_run(recvfrom, (void *) socket, thrname);
+
   out:
     return ret;
 }
 
 static void __exit tuntap_exit(void)
 {
+    kthread_stop(t);
+    br_del_interface(brname, "eth1");
     br_del_interface(brname, tapname);
     disable_iface(tapname);
     disable_iface(brname);
