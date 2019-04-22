@@ -229,11 +229,75 @@ static int destroy_bridge(char *brname)
     return ret;
 }
 
-#if 0
-struct net_device *tapdev;
+int br_add_interface(const char *bridge, const char *dev)
+{
+    struct ifreq ifr;
+    int ret = -EINVAL;
+    struct net_device *tapdev = dev_get_by_name(&init_net, dev);
+    int ifindex = tapdev->ifindex;
+    struct file *fileptr = NULL;
+    struct socket *socket = NULL;
 
-tapdev = dev_get_by_name(&init_net, tap);
-#endif
+    if (ifindex == 0) {
+        ret = -ENODEV;
+        goto out;
+    }
+
+    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+
+    ifr.ifr_ifindex = ifindex;
+
+    if ((socket = socketif(AF_LOCAL, SOCK_STREAM, 0)) == NULL) {
+        printk("error creating socket\n");
+        goto out;
+    }
+
+    fileptr = socket->file;
+
+    ret = ioctlif(fileptr, SIOCBRADDIF, (unsigned long) &ifr);
+    if (ret < 0) {
+        printk("error adding iface:%s to br:%s\n", dev, bridge);
+        goto out;
+    }
+    dev_put(tapdev);
+  out:
+    return ret;
+}
+
+int br_del_interface(const char *bridge, const char *dev)
+{
+    struct ifreq ifr;
+    int ret = -EINVAL;
+    struct net_device *tapdev = dev_get_by_name(&init_net, dev);
+    int ifindex = tapdev->ifindex;
+    struct file *fileptr = NULL;
+    struct socket *socket = NULL;
+
+    if (ifindex == 0) {
+        ret = -ENODEV;
+        goto out;
+    }
+
+    strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+
+    ifr.ifr_ifindex = ifindex;
+
+    if ((socket = socketif(AF_LOCAL, SOCK_STREAM, 0)) == NULL) {
+        printk("error creating socket\n");
+        goto out;
+    }
+
+    fileptr = socket->file;
+
+    ret = ioctlif(fileptr, SIOCBRDELIF, (unsigned long) &ifr);
+    if (ret < 0) {
+        printk("error deleting iface:%s from br:%s\n", dev, bridge);
+        goto out;
+    }
+    dev_put(tapdev);
+  out:
+    return ret;
+}
 
 static int tuntap_iface_init(struct file **tunfptr, char *ifname)
 {
@@ -288,12 +352,15 @@ static int __init tuntap_init(void)
 
     enable_iface(tapname);
     enable_iface(brname);
+    ret = br_add_interface(brname, tapname);
+    //ret = br_add_interface(brname, "eth1");
   out:
     return ret;
 }
 
 static void __exit tuntap_exit(void)
 {
+    br_del_interface(brname, tapname);
     disable_iface(tapname);
     disable_iface(brname);
 
