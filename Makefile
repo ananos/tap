@@ -1,4 +1,4 @@
-tuntap-objs := tap.o
+tuntap-objs := tap.o tap_util.o
 obj-m += tuntap.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
