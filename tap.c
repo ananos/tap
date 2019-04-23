@@ -67,9 +67,9 @@ static int __init tuntap_init(void)
 
     enable_iface(tapname);
     enable_iface(brname);
-    enable_iface("eth1");
+    //enable_iface("eth1");
     ret = br_add_interface(brname, tapname);
-    ret = br_add_interface(brname, "eth1");     /* temp 2nd interface to have some traffic */
+    //ret = br_add_interface(brname, "eth1");     /* temp 2nd interface to have some traffic */
 
     struct net_device *tapdev = dev_get_by_name(&init_net, tapname);
     //int ifindex = tapdev->ifindex;
@@ -100,7 +100,7 @@ static int __init tuntap_init(void)
 static void __exit tuntap_exit(void)
 {
     kthread_stop(t);
-    br_del_interface(brname, "eth1");
+    //br_del_interface(brname, "eth1");
     br_del_interface(brname, tapname);
     disable_iface(tapname);
     disable_iface(brname);

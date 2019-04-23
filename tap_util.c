@@ -42,6 +42,8 @@
 #define TAP_FILE_PATH "/dev/net/tun"
 
 static mm_segment_t oldfs;
+uint8_t tapmac[6];
+uint8_t bcastmac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
 long ioctlif(struct file *fileptr, unsigned int cmd, unsigned long arg)
 {
@@ -105,22 +107,22 @@ inline int recvfrom(void *arg)
     struct socket *sock = (struct socket *) arg;
     int recvlen;
     int ret = -EINVAL;
+    struct ethhdr *ehdr;
+    char *srcmac, *dstmac;
 
     if (sock->sk == NULL) {
         printk("sk = 0\n");
         ret = 0;
         goto out;
     }
-	buf = vmalloc(9000);
+    buf = vmalloc(9000);
     iov.iov_base = buf;
     iov.iov_len = 9000;
 
     while (!kthread_should_stop()) {
         iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, 9000);
-        recvlen = sock_recvmsg(sock, &msg, MSG_TRUNC);
-        //iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, 2048);
+        recvlen = sock_recvmsg(sock, &msg, msg.msg_flags);
 
-        //printk("recvlen = %d\n", recvlen);
         if (recvlen < 0) {
             if (recvlen == -EAGAIN) {
                 schedule();
@@ -129,11 +131,19 @@ inline int recvfrom(void *arg)
             printk("recvlen:%d\n", recvlen);
             goto out;
         }
-        if (((struct ethhdr *) buf)->h_proto != htons(ETH_P_IP)) {
-            printk("received non IP frame, proto:%x, len:%u\n", ntohs(((struct ethhdr *) buf)->h_proto), recvlen);
+
+        ehdr = (struct ethhdr *) buf;
+        srcmac = ehdr->h_source;
+        dstmac = ehdr->h_dest;
+        /* Example broadcast & local mac filtering */
+        //if (memcmp(dstmac, tapmac, ETH_ALEN) == 0 || memcmp(dstmac, bcastmac, ETH_ALEN) == 0) {
+        if (memcmp(dstmac, tapmac, ETH_ALEN) == 0) {
+            printk("proto:%#x, src:%pM dst:%pM len:%u\n", ntohs(ehdr->h_proto), srcmac, dstmac, recvlen);
         }
+        //if (ehdr->h_proto != htons(ETH_P_IP)) { }
 
     }
+    vfree(buf);
 
   out:
     sock_release(sock);
@@ -372,6 +382,13 @@ int tuntap_iface_init(struct file **tunfptr, char *ifname)
         printk("tap iface create failed, reg:%d\n", ret);
         goto out;
     }
+
+    ret = ioctlif(fileptr, SIOCGIFHWADDR, (unsigned long) &ifr);
+    if (ret < 0) {
+        printk("tap iface create failed, reg:%d\n", ret);
+        goto out;
+    }
+    memcpy(tapmac, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
     *tunfptr = fileptr;
   out:
